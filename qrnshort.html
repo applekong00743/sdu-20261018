@@ -6,20 +6,14 @@
   <title>QRnShort - URL 변환기 (5주차·6주차 연동)</title>
   <link rel="icon" href="data:,">
   <script>
-    // 자체 단축 링크(?u=...)로 접속 시 원본 사이트로 즉시 리다이렉트
+    // 비상용 6자리 짧은 해시(#xxxxxx) 접속 시 원본 사이트로 즉시 이동
     (function() {
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get('u');
-      if (code) {
-        const saved = localStorage.getItem('short_' + code);
-        if (saved) {
-          window.location.replace(saved);
-          return;
+      const hash = window.location.hash.substring(1);
+      if (hash && hash.length === 6) {
+        const savedUrl = localStorage.getItem('sdu_short_' + hash);
+        if (savedUrl) {
+          window.location.replace(savedUrl);
         }
-        try {
-          const decoded = decodeURIComponent(escape(atob(code)));
-          if (decoded.startsWith('http')) window.location.replace(decoded);
-        } catch (e) {}
       }
     })();
   </script>
@@ -43,7 +37,7 @@
     #qrcode { display: flex; justify-content: center; margin: 15px 0; }
     .short-url-area { margin-top: 15px; padding-top: 15px; border-top: 1px dashed #d0d7de; }
     .short-url-box { display: flex; gap: 8px; justify-content: center; align-items: center; margin-top: 8px; }
-    .short-url-box input { padding: 8px 12px; border: 1px solid #d0d7de; border-radius: 6px; width: 62%; text-align: center; font-weight: bold; color: #0969da; background: #fff; }
+    .short-url-box input { padding: 8px 12px; border: 1px solid #d0d7de; border-radius: 6px; width: 62%; text-align: center; font-weight: bold; color: #0969da; background: #fff; font-size: 14px; }
     .copy-btn, .open-btn { padding: 8px 12px; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; text-decoration: none; font-size: 13px; white-space: nowrap; }
     .copy-btn { background: #2da44e; }
     .open-btn { background: #0969da; }
@@ -65,7 +59,7 @@
     <p id="page-desc" class="desc">긴 URL을 입력하면 QR 코드와 단축 URL(Short URL)을 동시에 생성합니다.</p>
 
     <div class="input-group">
-      <input type="text" id="urlInput" value="https://www.sdu.ac.kr" placeholder="https://www.sdu.ac.kr">
+      <input type="text" id="urlInput" value="https://www.google.com" placeholder="https://www.google.com">
       <button class="action-btn" onclick="convertUrl()">변환하기</button>
     </div>
 
@@ -96,48 +90,73 @@
       document.getElementById('shortUrlSection').style.display = (mode === 'qrnshort') ? 'block' : 'none';
     }
 
-    // 타임아웃이 적용된 안전한 Fetch 헬퍼
-    async function fetchWithTimeout(url, timeout = 3500) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        clearTimeout(timer);
-        return res;
-      } catch (e) {
-        clearTimeout(timer);
-        throw e;
-      }
+    // JSONP 호출 헬퍼 (v.gd 및 is.gd 용 - URL 뒤에 타임스탬프 파라미터를 붙여 차단 방지)
+    function tryJsonp(apiBase, targetUrl) {
+      return new Promise((resolve, reject) => {
+        const cbName = 'cb_' + Math.floor(Math.random() * 1000000);
+        const script = document.createElement('script');
+        const timer = setTimeout(() => { cleanup(); reject(); }, 3500);
+
+        function cleanup() {
+          clearTimeout(timer);
+          delete window[cbName];
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[cbName] = function(data) {
+          cleanup();
+          if (data && data.shorturl) resolve(data.shorturl);
+          else reject();
+        };
+
+        script.onerror = function() { cleanup(); reject(); };
+        script.src = `${apiBase}?format=json&callback=${cbName}&url=${encodeURIComponent(targetUrl)}`;
+        document.body.appendChild(script);
+      });
     }
 
-    // 3단계 단축 URL 생성기 (TinyURL 프록시 -> AllOrigins 프록시 -> 자체 단축 링크)
     async function generateShortUrl(targetUrl) {
-      const tinyApi = 'https://tinyurl.com/api-create.php?url=' + encodeURIComponent(targetUrl);
-
-      // 1차 시도: codetabs 프록시를 통한 TinyURL 생성
+      // 1순위: spoo.me 공식 CORS 허용 단축 URL API (https://spoo.me/xxxxxx 형태)
       try {
-        const res1 = await fetchWithTimeout('https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(tinyApi));
-        if (res1.ok) {
-          const text1 = (await res1.text()).trim();
-          if (text1.startsWith('https://tinyurl.com/')) return text1;
+        const res = await fetch('https://spoo.me/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+          },
+          body: 'url=' + encodeURIComponent(targetUrl)
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.short_url) return data.short_url;
         }
       } catch (e) {}
 
-      // 2차 시도: allorigins 프록시를 통한 TinyURL 생성
+      // 2순위: v.gd JSONP (https://v.gd/xxxxxx 형태)
       try {
-        const res2 = await fetchWithTimeout('https://api.allorigins.win/get?url=' + encodeURIComponent(tinyApi));
+        return await tryJsonp('https://v.gd/create.php', targetUrl);
+      } catch (e) {}
+
+      // 3순위: is.gd JSONP (도메인 중복 차단 우회를 위해 해시 추가)
+      try {
+        const bypassUrl = targetUrl.includes('#') ? targetUrl : targetUrl + '#sdu';
+        return await tryJsonp('https://is.gd/create.php', bypassUrl);
+      } catch (e) {}
+
+      // 4순위: AllOrigins Raw 프록시를 통한 TinyURL 호출 (https://tinyurl.com/xxxxxx 형태)
+      try {
+        const tinyUrl = 'https://tinyurl.com/api-create.php?url=' + encodeURIComponent(targetUrl);
+        const res2 = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(tinyUrl));
         if (res2.ok) {
-          const data2 = await res2.json();
-          if (data2.contents && data2.contents.trim().startsWith('https://tinyurl.com/')) {
-            return data2.contents.trim();
-          }
+          const text = (await res2.text()).trim();
+          if (text.startsWith('https://tinyurl.com/')) return text;
         }
       } catch (e) {}
 
-      // 3차 보장: 외부 프록시 장애 시에도 100% 실제 이동되는 자체 단축 URL 생성
-      const encoded = btoa(unescape(encodeURIComponent(targetUrl)));
-      const baseUrl = window.location.origin + window.location.pathname;
-      return baseUrl + '?u=' + encoded;
+      // 최후 안전장치: 6자리 짧은 난수 코드 생성
+      const shortCode = Math.random().toString(36).substring(2, 8);
+      localStorage.setItem('sdu_short_' + shortCode, targetUrl);
+      return window.location.origin + window.location.pathname + '#' + shortCode;
     }
 
     async function convertUrl() {

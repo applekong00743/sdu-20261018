@@ -183,4 +183,129 @@
     <p id="page-desc" class="desc">긴 URL을 입력하면 QR 코드와 단축 URL(Short URL)을 동시에 생성합니다.</p>
 
     <div class="input-group">
-      <input type="url" id="urlInput" placeholder="
+      <input type="url" id="urlInput" placeholder="https://www.sdu.ac.kr" required>
+      <button class="action-btn" onclick="convertUrl()">변환하기</button>
+    </div>
+
+    <div id="resultBox" class="result-box">
+      <strong>📱 생성된 QR 코드</strong>
+      <div id="qrcode"></div>
+
+      <div id="shortUrlSection" class="short-url-area">
+        <strong>✂️ 생성된 단축 URL (Short URL)</strong>
+        <div class="short-url-box">
+          <input type="text" id="shortUrlOutput" readonly>
+          <button class="copy-btn" onclick="copyShortUrl()">복사</button>
+          <a id="openShortUrlBtn" href="#" target="_blank" class="open-btn">이동</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentMode = 'qrnshort';
+
+    function switchMode(mode) {
+      currentMode = mode;
+      document.getElementById('tab-qrnshort').classList.toggle('active', mode === 'qrnshort');
+      document.getElementById('tab-url2qr').classList.toggle('active', mode === 'url2qr');
+
+      if (mode === 'qrnshort') {
+        document.getElementById('page-title').innerText = '🔗 QRnShort 변환기';
+        document.getElementById('page-desc').innerText = '긴 URL을 입력하면 QR 코드와 단축 URL(Short URL)을 동시에 생성합니다.';
+        document.getElementById('shortUrlSection').style.display = 'block';
+      } else {
+        document.getElementById('page-title').innerText = '📱 URL2QR 생성기 (5주차 2교시)';
+        document.getElementById('page-desc').innerText = 'URL 주소를 입력하면 즉시 QR 코드로 변환합니다.';
+        document.getElementById('shortUrlSection').style.display = 'none';
+      }
+    }
+
+    // CORS 차단을 우회하는 JSONP 단축 URL 요청 함수
+    function shortenWithJsonp(apiBase, targetUrl) {
+      return new Promise((resolve, reject) => {
+        const callbackName = 'jsonp_cb_' + Math.round(100000 * Math.random());
+        const script = document.createElement('script');
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('Timeout'));
+        }, 5000);
+
+        function cleanup() {
+          clearTimeout(timer);
+          delete window[callbackName];
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[callbackName] = function(data) {
+          cleanup();
+          if (data && data.shorturl) {
+            resolve(data.shorturl);
+          } else {
+            reject(new Error('API Error'));
+          }
+        };
+
+        script.onerror = function() {
+          cleanup();
+          reject(new Error('Script Load Error'));
+        };
+
+        script.src = `${apiBase}?format=json&callback=${callbackName}&url=${encodeURIComponent(targetUrl)}`;
+        document.body.appendChild(script);
+      });
+    }
+
+    async function convertUrl() {
+      const urlInput = document.getElementById('urlInput').value.trim();
+      if (!urlInput) {
+        alert('변환할 URL 주소를 입력해 주세요!');
+        return;
+      }
+
+      const targetUrl = urlInput.startsWith('http') ? urlInput : 'https://' + urlInput;
+
+      // 1. QR 코드 생성
+      const qrContainer = document.getElementById('qrcode');
+      qrContainer.innerHTML = '';
+      new QRCode(qrContainer, {
+        text: targetUrl,
+        width: 180,
+        height: 180
+      });
+
+      document.getElementById('resultBox').style.display = 'block';
+
+      // 2. 실제 작동하는 단축 URL 생성 (is.gd JSONP -> v.gd JSONP -> 자체 리다이렉트 순)
+      if (currentMode === 'qrnshort') {
+        const shortOutput = document.getElementById('shortUrlOutput');
+        const openBtn = document.getElementById('openShortUrlBtn');
+        shortOutput.value = '단축 URL 생성 중...';
+
+        let finalShortUrl = '';
+        try {
+          finalShortUrl = await shortenWithJsonp('https://is.gd/create.php', targetUrl);
+        } catch (e1) {
+          try {
+            finalShortUrl = await shortenWithJsonp('https://v.gd/create.php', targetUrl);
+          } catch (e2) {
+            // 외부 API 모두 차단된 환경일 경우 100% 이동 보장되는 자체 리다이렉트 링크 생성
+            const encoded = btoa(unescape(encodeURIComponent(targetUrl)));
+            finalShortUrl = `${window.location.origin}${window.location.pathname}?go=${encoded}`;
+          }
+        }
+
+        shortOutput.value = finalShortUrl;
+        openBtn.href = finalShortUrl;
+      }
+    }
+
+    function copyShortUrl() {
+      const copyText = document.getElementById('shortUrlOutput');
+      copyText.select();
+      navigator.clipboard.writeText(copyText.value);
+      alert('단축 URL이 복사되었습니다: ' + copyText.value);
+    }
+  </script>
+</body>
+</html>
